@@ -9,7 +9,7 @@ import java.util.Objects;
 /**
  * An array of tokens.
  */
-public class TokenArray implements Iterable<Float> {
+public class TokenArray implements TokenArrayCompatible {
     /**
      * The initial size when no specific size is designated.
      */
@@ -72,11 +72,18 @@ public class TokenArray implements Iterable<Float> {
     /**
      * Creates a new token array from another one. Produces a deep copy, where any change from the source will
      * not be reflected in the new instance.
-     * @param ta The source to copy from
+     * @param tac The source to copy from
      */
-    public TokenArray(TokenArray ta) {
-        this(Objects.requireNonNull(ta, "Source TokenArray cannot be null.").size);
-        System.arraycopy(ta.values, 0, this.values, 0, size);
+    public TokenArray(TokenArrayCompatible tac) {
+        this(Objects.requireNonNull(tac, "Source TokenArray cannot be null.").size());
+
+        if (tac instanceof TokenArray ta) {
+            System.arraycopy(ta.values, 0, this.values, 0, size);
+        } else if (tac instanceof TokenArrayFixedSize tafs) {
+            System.arraycopy(tafs.values, 0, this.values, 0, size);
+        } else {
+            System.arraycopy(tac.toArray(), 0, this.values, 0, size);
+        }
     }
 
     /**
@@ -84,6 +91,7 @@ public class TokenArray implements Iterable<Float> {
      * {@code 10} meaningful values, simply that there can be.
      * @return The current capacity of this token array
      */
+    @Override
     public int size() {
         return size;
     }
@@ -159,6 +167,7 @@ public class TokenArray implements Iterable<Float> {
      * @return The value
      * @throws IndexOutOfBoundsException When the index is out of bounds
      */
+    @Override
     public float get(int i) throws IndexOutOfBoundsException {
         if (i < 0 || i >= size) {
             throw new IndexOutOfBoundsException("Invalid index " + i + " for size of " + size);
@@ -173,6 +182,7 @@ public class TokenArray implements Iterable<Float> {
      * @param value The value to set to
      * @throws IndexOutOfBoundsException When the index is out of bounds
      */
+    @Override
     public void set(int i, float value) throws IndexOutOfBoundsException {
         if (i < 0 || i >= size) {
             throw new IndexOutOfBoundsException("Invalid index " + i + " for size of " + size);
@@ -191,6 +201,7 @@ public class TokenArray implements Iterable<Float> {
      * @throws IndexOutOfBoundsException When the index is invalid
      * @throws OutOfEmptyIndexException When the array is full
      */
+    @Override
     public void set(int i, float[] values) throws IndexOutOfBoundsException, OutOfEmptyIndexException {
         if (i < 0 || i > size) {
             throw new IndexOutOfBoundsException("Invalid index " + i + " for size of " + size);
@@ -308,6 +319,7 @@ public class TokenArray implements Iterable<Float> {
     /**
      * Clears the array, but does not resize to zero. To force delete the array, call {@link #resizeActual(int)} to resize to zero.
      */
+    @Override
     public void clear() {
         size = 0;
     }
@@ -316,6 +328,7 @@ public class TokenArray implements Iterable<Float> {
      * Returns the contents of this array.
      * @return The contents of this array
      */
+    @Override
     public float[] toArray() {
         return Arrays.copyOf(values, size);
     }
@@ -341,33 +354,7 @@ public class TokenArray implements Iterable<Float> {
      */
     @Override
     public Iterator<Float> iterator() {
-        return new TokenArrayIterator(size, values);
-    }
-
-    /**
-     * Real-time iterator.
-     */
-    private static final class TokenArrayIterator implements Iterator<Float> {
-        private TokenArrayIterator(int size, float[] values) {
-            this.size = size;
-            this.referenceToArray = values;
-            this.index = 0;
-        }
-
-        private int index;
-        private final int size;
-        private final float[] referenceToArray;
-
-
-        @Override
-        public boolean hasNext() {
-            return index < size;
-        }
-
-        @Override
-        public Float next() {
-            return referenceToArray[index++];
-        }
+        return new TokenArrayLiveIterator(size, values);
     }
 
     @Override
