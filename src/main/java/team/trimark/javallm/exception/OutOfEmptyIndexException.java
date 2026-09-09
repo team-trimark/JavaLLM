@@ -5,6 +5,11 @@ package team.trimark.javallm.exception;
  */
 public class OutOfEmptyIndexException extends RuntimeException {
     /**
+     * The serial version unique identifier of this class.
+     */
+    private static final long serialVersionUID = 1L;
+
+    /**
      * Creates a new exception.
      * @param message The message
      */

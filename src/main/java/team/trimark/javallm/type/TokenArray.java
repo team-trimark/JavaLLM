@@ -35,14 +35,21 @@ public class TokenArray implements TokenArrayCompatible {
      */
     private static final int FINAL_BLOCK_LIMIT = Integer.MAX_VALUE - BLOCK_SIZE;
 
+    /**
+     * The nominal size of this array; the number of readable tokens.
+     */
     private int size;
+
+    /**
+     * The backing values of this array; its length is the actual capacity.
+     */
     private float[] values;
 
     /**
      * Creates a new token array with the size {@link #DEFAULT_SIZE}, nominally empty.
      */
     public TokenArray() {
-        this(0);
+        this(DEFAULT_SIZE);
     }
 
     /**
@@ -55,7 +62,7 @@ public class TokenArray implements TokenArrayCompatible {
         }
 
         this.size = 0;
-        this.values = new float[DEFAULT_SIZE];
+        this.values = new float[initialSize];
     }
 
     /**
@@ -76,6 +83,8 @@ public class TokenArray implements TokenArrayCompatible {
      */
     public TokenArray(TokenArrayCompatible tac) {
         this(Objects.requireNonNull(tac, "Source TokenArray cannot be null.").size());
+
+        this.size = tac.size();
 
         if (tac instanceof TokenArray ta) {
             System.arraycopy(ta.values, 0, this.values, 0, size);
@@ -213,17 +222,18 @@ public class TokenArray implements TokenArrayCompatible {
         Objects.requireNonNull(values, "Input array cannot be null.");
 
         int payloadSize = values.length;
+
+        if (Integer.MAX_VALUE - payloadSize < i) {
+            throw new OutOfEmptyIndexException("This TokenArray cannot take " + payloadSize + " more tokens. The available capacity is " + (Integer.MAX_VALUE - size));
+        }
+
         int lastIndexToSet = i + payloadSize;
 
-        boolean needsNominalResize = lastIndexToSet >= size;
-        boolean needsActualResize = lastIndexToSet >= this.values.length;
+        boolean needsNominalResize = lastIndexToSet > size;
+        boolean needsActualResize = lastIndexToSet > this.values.length;
         boolean needsResize = needsNominalResize || needsActualResize;
 
         if (needsResize) {
-            if (Integer.MAX_VALUE - lastIndexToSet < this.values.length) {
-                throw new OutOfEmptyIndexException("This TokenArray cannot take " + payloadSize + " more tokens. The available capacity is " + (Integer.MAX_VALUE - size));
-            }
-
             if (needsActualResize) {
                 resizeNominal(lastIndexToSet);
             } else {
@@ -357,17 +367,30 @@ public class TokenArray implements TokenArrayCompatible {
         return new TokenArrayLiveIterator(size, values);
     }
 
+    /**
+     * Checks for equality with another object.
+     * @param obj The object to compare to
+     * @return {@code true} if the other object is a token array of equal size and contents
+     */
     @Override
     public boolean equals(Object obj) {
         if (!(obj instanceof TokenArray ta)) return false;
         return size == ta.size && Arrays.equals(values, 0, size, ta.values, 0, size);
     }
 
+    /**
+     * Returns the hash code of this array.
+     * @return The hash code of this array
+     */
     @Override
     public int hashCode() {
         return Objects.hash(size, Arrays.hashCode(Arrays.copyOf(values, size)));
     }
 
+    /**
+     * Serializes this array into a string.
+     * @return The string representation of this array
+     */
     @Override
     public String toString() {
         return "TokenArray{" +
