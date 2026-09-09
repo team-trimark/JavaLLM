@@ -46,7 +46,7 @@ public class TokenArray implements Iterable<Float> {
     }
 
     /**
-     * Creates a new token array with the provided initial size.
+     * Creates a new token array with the provided initial size, nominally empty.
      * @param initialSize The initial size
      */
     public TokenArray(int initialSize) {
@@ -54,7 +54,7 @@ public class TokenArray implements Iterable<Float> {
             throw new IllegalArgumentException("TokenArray size cannot be negative.");
         }
 
-        this.size = initialSize;
+        this.size = 0;
         this.values = new float[DEFAULT_SIZE];
     }
 
