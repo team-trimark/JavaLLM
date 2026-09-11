@@ -1,124 +1,72 @@
 package team.trimark.javallm.type;
 
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.Function;
 
 /**
- * A two-dimensional, fixed-size grid of tokens. Values are stored flat in column-major order.
+ * A two-dimensional, fixed-size grid of floating point values.
+ * <p>
+ * This is a contract, not a layout. An implementation is free to store its values however it
+ * likes - densely, sparsely, or as a view over another matrix - so long as it answers
+ * {@link #get(int, int)} and {@link #set(int, int, float)} consistently with the shape it
+ * reports. Callers that only read and write individual values need nothing more than this.
+ * <p>
+ * Callers that move bulk data - the product kernels in particular - want more than that: they
+ * want to walk memory contiguously, which per-element accessors cannot express. Those callers
+ * should test for {@link DenseTokenMatrix} and take its backing array when it is available,
+ * falling back to {@code get}/{@code set} when it is not. Keeping that capability on the
+ * implementation rather than in this interface is deliberate: exposing a mutable array from
+ * the contract would oblige every future implementation to have one.
+ *
+ * @see DenseTokenMatrix The default dense, column-major implementation
  */
-public class TokenMatrix {
-
+public interface TokenMatrix {
     /**
-     * The number of rows of this matrix.
-     */
-    private final int rows;
-
-    /**
-     * The number of columns of this matrix.
-     */
-    private final int columns;
-
-    /**
-     * The flat backing values of this matrix.
-     */
-    private final float[] values;
-
-    /**
-     * Creates a new matrix of the provided dimensions, with every value initialized to {@code 0}.
+     * Creates a new dense matrix of the provided dimensions, with every value initialized to
+     * {@code 0}.
      * @param rows The number of rows
      * @param columns The number of columns
+     * @return The new matrix
      * @throws IllegalArgumentException When either dimension is negative, or their product overflows
      */
-    public TokenMatrix(int rows, int columns) {
-        if (rows < 0 || columns < 0 || (long) rows * columns > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("Dimensions are invalid or too large: " + Dimension.rowCols(rows, columns));
-        }
-
-        this.rows = rows;
-        this.columns = columns;
-        this.values = new float[rows * columns];
-
+    static TokenMatrix of(int rows, int columns) {
+        return new DenseTokenMatrix(rows, columns);
     }
 
     /**
-     * Creates a new matrix of the provided dimensions, with every value initialized to {@code 0}.
+     * Creates a new dense matrix of the provided dimensions, with every value initialized to
+     * {@code 0}.
      * @param size The dimensions of the new matrix
+     * @return The new matrix
      * @throws IllegalArgumentException When either dimension is negative, or their product overflows
      * @throws NullPointerException When the provided size is {@code null}
      */
-    public TokenMatrix(Dimension size) {
-        Objects.requireNonNull(size, "Size of a matrix cannot be null.");
-
-        this.rows = size.rows();
-        this.columns = size.columns();
-
-        if (rows < 0 || columns < 0 || (long) rows * columns > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("Dimensions are invalid or too large: " + size);
-        }
-
-        this.values = new float[rows * columns];
+    static TokenMatrix of(Dimension size) {
+        return new DenseTokenMatrix(size);
     }
 
     /**
-     * Creates a new matrix from another one. Produces a deep copy, where any change from the source
-     * will not be reflected in the new instance.
+     * Creates a deep copy of the provided matrix, where any later change to the source is not
+     * reflected in the copy.
      * @param m The source to copy from
+     * @return The new matrix
      * @throws NullPointerException When the source is {@code null}
      */
-    public TokenMatrix(TokenMatrix m) {
-        Objects.requireNonNull(m, "Cannot copy from null matrix.");
-
-        this.rows = m.rows;
-        this.columns = m.columns;
-        this.values = Arrays.copyOf(m.values, rows * columns);
+    static TokenMatrix copyOf(TokenMatrix m) {
+        return new DenseTokenMatrix(m);
     }
 
     /**
      * Returns the number of rows of this matrix.
      * @return The number of rows
      */
-    public int rows() {
-        return rows;
-    }
+    int rows();
 
     /**
      * Returns the number of columns of this matrix.
      * @return The number of columns
      */
-    public int columns() {
-        return columns;
-    }
-
-    /**
-     * Converts the row-column pair held by the provided dimension into a flat index.
-     * @param dim The row-column pair to convert
-     * @return The corresponding flat index
-     */
-    private int dimsToFlat(Dimension dim) {
-        return dim.columns() * rows + dim.rows();
-    }
-
-    /**
-     * Converts a row-column pair into a flat index.
-     * @param r The row
-     * @param c The column
-     * @return The corresponding flat index
-     */
-    private int rowColToFlat(int r, int c) {
-        return c * rows + r;
-    }
-
-    /**
-     * Converts a flat index into a row-column pair.
-     * @param i The flat index to convert
-     * @return The corresponding row-column pair
-     */
-    private Dimension flatToRowCol(int i) {
-        int r = i % rows;
-        int c = i / rows;
-        return Dimension.rowCols(r, c);
-    }
+    int columns();
 
     /**
      * Returns the value at the provided row and column.
@@ -127,14 +75,7 @@ public class TokenMatrix {
      * @return The value
      * @throws IndexOutOfBoundsException When either coordinate is out of bounds
      */
-    public float get(int r, int c) throws IndexOutOfBoundsException {
-        if (r >= rows || c >= columns || r < 0 || c < 0) {
-            throw new IndexOutOfBoundsException("Index out of bounds for matrix " + rows + " * " + columns);
-        }
-
-        int i = rowColToFlat(r, c);
-        return values[i];
-    }
+    float get(int r, int c) throws IndexOutOfBoundsException;
 
     /**
      * Sets the value at the provided row and column.
@@ -143,46 +84,36 @@ public class TokenMatrix {
      * @param v The value to set to
      * @throws IndexOutOfBoundsException When either coordinate is out of bounds
      */
-    public void set(int r, int c, float v) throws IndexOutOfBoundsException {
-        if (r >= rows || c >= columns || r < 0 || c < 0) {
-            throw new IndexOutOfBoundsException("Index out of bounds for matrix " + rows + " * " + columns);
-        }
+    void set(int r, int c, float v) throws IndexOutOfBoundsException;
 
-        int i = rowColToFlat(r, c);
-        values[i] = v;
+    /**
+     * Returns the dimensions of this matrix.
+     * @return The dimensions of this matrix
+     */
+    default Dimension size() {
+        return Dimension.rowCols(rows(), columns());
     }
 
     /**
-     * Checks for equality with another object.
-     * @param obj The object to compare to
-     * @return {@code true} if the other object is a matrix of equal dimensions and contents
+     * Returns the total number of values held by this matrix.
+     * @return The number of values
      */
-    @Override
-    public boolean equals(Object obj) {
-        if (!(obj instanceof TokenMatrix tm)) return false;
-        if (rows != tm.rows || columns != tm.columns) return false;
-        return Arrays.equals(values, tm.values);
-    }
-
-    /**
-     * Returns the hash code of this matrix.
-     * @return The hash code of this matrix
-     */
-    @Override
-    public int hashCode() {
-        return Objects.hash(rows, columns, Arrays.hashCode(values));
+    default int count() {
+        return rows() * columns();
     }
 
     /**
      * Returns the contents of this matrix as a two-dimensional array, indexed by row then column.
      * @return The contents of this matrix
      */
-    public float[][] toFloatArray() {
+    default float[][] toFloatArray() {
+        int rows = rows();
+        int columns = columns();
         float[][] result = new float[rows][columns];
 
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < columns; c++) {
-                result[r][c] = values[rowColToFlat(r, c)];
+                result[r][c] = get(r, c);
             }
         }
 
@@ -194,7 +125,7 @@ public class TokenMatrix {
      * column, using {@link Object#toString()} to format each value.
      * @return The contents of this matrix
      */
-    public String[][] toStringArray() {
+    default String[][] toStringArray() {
         return toStringArray(Object::toString);
     }
 
@@ -203,13 +134,18 @@ public class TokenMatrix {
      * column.
      * @param formatter The formatter to convert each value with
      * @return The contents of this matrix
+     * @throws NullPointerException When the formatter is {@code null}
      */
-    public String[][] toStringArray(Function<Float, String> formatter) {
+    default String[][] toStringArray(Function<Float, String> formatter) {
+        Objects.requireNonNull(formatter, "Formatter cannot be null.");
+
+        int rows = rows();
+        int columns = columns();
         String[][] result = new String[rows][columns];
 
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < columns; c++) {
-                result[r][c] = formatter.apply(values[rowColToFlat(r, c)]);
+                result[r][c] = formatter.apply(get(r, c));
             }
         }
 
@@ -217,15 +153,47 @@ public class TokenMatrix {
     }
 
     /**
-     * Serializes this matrix into a string.
-     * @return The string representation of this matrix
+     * Compares two matrices for equality by shape and contents, regardless of their
+     * implementations. Every implementation must be consistent with this, so that a dense matrix
+     * and any other implementation holding the same values compare equal.
+     * @param a The first matrix, which may be {@code null}
+     * @param b The second matrix, which may be {@code null}
+     * @return {@code true} if both are {@code null}, or both have equal dimensions and contents
      */
-    @Override
-    public String toString() {
-        return "TokenMatrix{" +
-                "rows=" + rows +
-                ", columns=" + columns +
-                ", values=" + Arrays.toString(values) +
-                '}';
+    static boolean equals(TokenMatrix a, TokenMatrix b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        if (a.rows() != b.rows() || a.columns() != b.columns()) return false;
+
+        for (int c = 0; c < a.columns(); c++) {
+            for (int r = 0; r < a.rows(); r++) {
+                if (Float.compare(a.get(r, c), b.get(r, c)) != 0) return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Computes the hash code of a matrix from its shape and contents. Every implementation must
+     * use this, so that two equal matrices of differing implementations hash alike.
+     * @param m The matrix to hash
+     * @return The hash code of the provided matrix
+     * @throws NullPointerException When the matrix is {@code null}
+     */
+    static int hashCode(TokenMatrix m) {
+        Objects.requireNonNull(m, "Cannot hash a null matrix.");
+
+        int result = 1;
+        result = 31 * result + m.rows();
+        result = 31 * result + m.columns();
+
+        for (int c = 0; c < m.columns(); c++) {
+            for (int r = 0; r < m.rows(); r++) {
+                result = 31 * result + Float.hashCode(m.get(r, c));
+            }
+        }
+
+        return result;
     }
 }

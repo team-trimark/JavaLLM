@@ -2,6 +2,7 @@ package team.trimark.javallm.llm;
 
 import team.trimark.javallm.nn.Adam;
 import team.trimark.javallm.nn.Parameter;
+import team.trimark.javallm.type.DenseTokenMatrix;
 
 import java.util.Objects;
 import java.util.Random;
@@ -101,6 +102,17 @@ public final class Trainer {
      */
     private void scaleAndClipGradients(float scale) {
         for (Parameter p : model.parameters()) {
+            if (p.gradient instanceof DenseTokenMatrix dense) {
+                float[] g = dense.columnMajorValues();
+
+                for (int i = 0; i < g.length; i++) {
+                    float scaled = g[i] * scale;
+                    g[i] = Math.max(-gradientClip, Math.min(gradientClip, scaled));
+                }
+
+                continue;
+            }
+
             for (int r = 0; r < p.gradient.rows(); r++) {
                 for (int c = 0; c < p.gradient.columns(); c++) {
                     float scaled = p.gradient.get(r, c) * scale;

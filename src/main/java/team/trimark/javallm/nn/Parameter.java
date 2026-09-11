@@ -1,5 +1,6 @@
 package team.trimark.javallm.nn;
 
+import team.trimark.javallm.type.DenseTokenMatrix;
 import team.trimark.javallm.type.TokenMatrix;
 
 import java.util.Objects;
@@ -32,13 +33,18 @@ public final class Parameter {
     public Parameter(String name, TokenMatrix value) {
         this.name = Objects.requireNonNull(name, "Parameter name cannot be null.");
         this.value = Objects.requireNonNull(value, "Parameter value cannot be null.");
-        this.gradient = new TokenMatrix(value.rows(), value.columns());
+        this.gradient = TokenMatrix.of(value.rows(), value.columns());
     }
 
     /**
      * Resets the accumulated gradient of this parameter to zero.
      */
     public void zeroGradient() {
+        if (gradient instanceof DenseTokenMatrix dense) {
+            dense.fill(0f);
+            return;
+        }
+
         for (int r = 0; r < gradient.rows(); r++) {
             for (int c = 0; c < gradient.columns(); c++) {
                 gradient.set(r, c, 0f);

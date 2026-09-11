@@ -46,6 +46,21 @@ public final class TransformerBlock {
     }
 
     /**
+     * Runs this block for a single new position, using and extending the provided cache.
+     * <p>
+     * This is the inference counterpart of {@link #forward(TokenMatrix)}. It records
+     * nothing for a backward pass, so it must not be used while training.
+     * @param x The activations of the new position, of shape {@code 1 * features}
+     * @param cache The attention keys and values of the positions before it
+     * @return The output, of the same shape
+     */
+    public TokenMatrix forwardStep(TokenMatrix x, AttentionCache cache) {
+        TokenMatrix afterAttention = Matrices.add(x, attention.forwardStep(attentionNorm.forward(x), cache));
+
+        return Matrices.add(afterAttention, feedForward.forward(feedForwardNorm.forward(afterAttention)));
+    }
+
+    /**
      * Runs this block over the provided activations.
      * @param x The activations, of shape {@code sequence * features}
      * @return The output, of the same shape

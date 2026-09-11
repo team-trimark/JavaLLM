@@ -1,5 +1,6 @@
 package team.trimark.javallm.llm;
 
+import team.trimark.javallm.nn.AttentionCache;
 import team.trimark.javallm.nn.LayerNorm;
 import team.trimark.javallm.nn.Matrices;
 import team.trimark.javallm.nn.Parameter;
@@ -26,9 +27,25 @@ public final class LanguageModel {
     private final int features;
 
     /**
+     * The width of each feed-forward hidden layer.
+     */
+    private final int hiddenFeatures;
+
+    /**
+     * The number of transformer blocks stacked.
+     */
+    private final int layers;
+
+    /**
      * The longest sequence this model can attend over.
      */
     private final int maxSequence;
+
+    /**
+     * The seed used to initialize the parameters. Retained so a model can describe the
+     * architecture it was built from, which a checkpoint needs in order to rebuild it.
+     */
+    private final long seed;
 
     /**
      * Every trainable parameter of this model.
@@ -87,7 +104,10 @@ public final class LanguageModel {
     public LanguageModel(Vocabulary vocabulary, int features, int hiddenFeatures, int layers, int maxSequence, long seed) {
         this.vocabulary = vocabulary;
         this.features = features;
+        this.hiddenFeatures = hiddenFeatures;
+        this.layers = layers;
         this.maxSequence = maxSequence;
+        this.seed = seed;
 
         Random random = new Random(seed);
 
@@ -103,7 +123,7 @@ public final class LanguageModel {
 
         this.finalNorm = new LayerNorm("lnf", features, parameters);
         this.outputWeights = new Parameter("out.w", Matrices.randomNormal(features, vocabulary.size(), 0.02, random));
-        this.outputBias = new Parameter("out.b", new TokenMatrix(1, vocabulary.size()));
+        this.outputBias = new Parameter("out.b", TokenMatrix.of(1, vocabulary.size()));
 
         parameters.add(outputWeights);
         parameters.add(outputBias);
@@ -148,6 +168,38 @@ public final class LanguageModel {
     }
 
     /**
+     * Returns the number of features carried per position.
+     * @return The number of features
+     */
+    public int features() {
+        return features;
+    }
+
+    /**
+     * Returns the width of each feed-forward hidden layer.
+     * @return The hidden width
+     */
+    public int hiddenFeatures() {
+        return hiddenFeatures;
+    }
+
+    /**
+     * Returns the number of transformer blocks stacked.
+     * @return The number of layers
+     */
+    public int layers() {
+        return layers;
+    }
+
+    /**
+     * Returns the seed used to initialize the parameters.
+     * @return The seed
+     */
+    public long seed() {
+        return seed;
+    }
+
+    /**
      * Runs the model over a sequence of identifiers.
      * @param ids The identifiers to run over
      * @return The unnormalized scores, of shape {@code sequence * vocabulary}
@@ -160,7 +212,7 @@ public final class LanguageModel {
 
         inputIds = ids;
 
-        TokenMatrix x = new TokenMatrix(ids.length, features);
+        TokenMatrix x = TokenMatrix.of(ids.length, features);
 
         for (int t = 0; t < ids.length; t++) {
             for (int c = 0; c < features; c++) {
@@ -196,7 +248,7 @@ public final class LanguageModel {
         int t = ids.length;
         float loss = 0f;
 
-        TokenMatrix dLogits = new TokenMatrix(t, vocabulary.size());
+        TokenMatrix dLogits = TokenMatrix.of(t, vocabulary.size());
 
         for (int i = 0; i < t; i++) {
             loss -= (float) Math.log(Math.max(probabilities.get(i, targets[i]), 1e-12f));
@@ -245,30 +297,108 @@ public final class LanguageModel {
      * @return The prompt followed by the generated continuation
      */
     public String generate(String prompt, int newTokens, float temperature, int topK, Random random) {
+        return generate(prompt, newTokens, temperature, topK, random, id -> {});
+    }
+
+    /**
+     * Continues the provided prompt, reporting each identifier as it is produced.
+     * <p>
+     * Generation is sequential and cannot be hurried, so a caller that displays output as
+     * it arrives should use this rather than waiting for the whole continuation.
+     * @param prompt The text to continue
+     * @param newTokens The number of tokens to generate
+     * @param temperature The sampling temperature; lower is more deterministic
+     * @param topK The number of highest scoring candidates to sample from
+     * @param random The source of randomness
+     * @param onToken Called with each identifier as it is produced
+     * @return The prompt followed by the generated continuation
+     * @throws IllegalArgumentException When the prompt contains no known tokens
+     */
+    public String generate(String prompt, int newTokens, float temperature, int topK, Random random,
+                           java.util.function.IntConsumer onToken) {
         int[] context = vocabulary.encode(prompt);
 
         if (context.length == 0) {
             throw new IllegalArgumentException("Prompt contains no known tokens.");
         }
 
+        if (newTokens < 0) {
+            throw new IllegalArgumentException("Cannot generate " + newTokens + " tokens.");
+        }
+
         int[] produced = new int[context.length + newTokens];
         System.arraycopy(context, 0, produced, 0, context.length);
         int length = context.length;
 
+        List<AttentionCache> caches = new ArrayList<>();
+
+        for (int i = 0; i < blocks.size(); i++) {
+            caches.add(new AttentionCache(maxSequence, features));
+        }
+
+        int windowStart = Math.max(0, length - maxSequence);
+        TokenMatrix logits = null;
+
+        for (int i = windowStart; i < length; i++) {
+            logits = forwardStep(produced[i], i - windowStart, caches);
+        }
+
         for (int step = 0; step < newTokens; step++) {
-            int windowStart = Math.max(0, length - maxSequence);
-            int windowLength = length - windowStart;
+            produced[length++] = sampleFrom(logits, 0, temperature, topK, random);
+            onToken.accept(produced[length - 1]);
 
-            int[] window = new int[windowLength];
-            System.arraycopy(produced, windowStart, window, 0, windowLength);
+            if (step + 1 == newTokens) {
+                break;
+            }
 
-            TokenMatrix logits = forward(window);
-            produced[length++] = sampleFrom(logits, windowLength - 1, temperature, topK, random);
+            if (caches.get(0).length() < maxSequence) {
+                logits = forwardStep(produced[length - 1], caches.get(0).length(), caches);
+                continue;
+            }
+
+            windowStart = length - maxSequence / 2;
+
+            for (AttentionCache cache : caches) {
+                cache.clear();
+            }
+
+            for (int i = windowStart; i < length; i++) {
+                logits = forwardStep(produced[i], i - windowStart, caches);
+            }
         }
 
         int[] result = new int[length];
         System.arraycopy(produced, 0, result, 0, length);
         return vocabulary.decode(result);
+    }
+
+    /**
+     * Runs the model over a single new position, reading every earlier position from the
+     * provided caches and extending them.
+     * <p>
+     * This computes the same scores as the final row of {@link #forward(int[])} over the
+     * same sequence, but without recomputing the positions before it. It records nothing
+     * for a backward pass, and overwrites the forward state of the normalization layers,
+     * so it must not be used between a training forward pass and its backward pass.
+     * @param id The identifier at this position
+     * @param position The offset of this position within the window
+     * @param caches The attention cache of each block
+     * @return The unnormalized scores, of shape {@code 1 * vocabulary}
+     */
+    private TokenMatrix forwardStep(int id, int position, List<AttentionCache> caches) {
+        TokenMatrix x = TokenMatrix.of(1, features);
+
+        for (int c = 0; c < features; c++) {
+            x.set(0, c, tokenEmbedding.value.get(id, c) + positionEmbedding.value.get(position, c));
+        }
+
+        for (int i = 0; i < blocks.size(); i++) {
+            x = blocks.get(i).forwardStep(x, caches.get(i));
+        }
+
+        TokenMatrix normalized = finalNorm.forward(x);
+
+        return Matrices.addRowVector(Matrices.matmul(normalized, outputWeights.value), outputBias.value);
     }
 
     /**

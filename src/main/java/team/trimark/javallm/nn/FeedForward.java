@@ -51,9 +51,9 @@ public final class FeedForward {
      */
     public FeedForward(String name, int features, int hiddenFeatures, List<Parameter> parameters, Random random) {
         this.inputWeights = new Parameter(name + ".w1", Matrices.randomNormal(features, hiddenFeatures, 0.02, random));
-        this.inputBias = new Parameter(name + ".b1", new TokenMatrix(1, hiddenFeatures));
+        this.inputBias = new Parameter(name + ".b1", TokenMatrix.of(1, hiddenFeatures));
         this.outputWeights = new Parameter(name + ".w2", Matrices.randomNormal(hiddenFeatures, features, 0.02, random));
-        this.outputBias = new Parameter(name + ".b2", new TokenMatrix(1, features));
+        this.outputBias = new Parameter(name + ".b2", TokenMatrix.of(1, features));
 
         parameters.add(inputWeights);
         parameters.add(inputBias);
@@ -70,7 +70,7 @@ public final class FeedForward {
         input = x;
 
         TokenMatrix pre = Matrices.addRowVector(Matrices.matmul(x, inputWeights.value), inputBias.value);
-        hidden = new TokenMatrix(pre.rows(), pre.columns());
+        hidden = TokenMatrix.of(pre.rows(), pre.columns());
 
         for (int r = 0; r < pre.rows(); r++) {
             for (int c = 0; c < pre.columns(); c++) {

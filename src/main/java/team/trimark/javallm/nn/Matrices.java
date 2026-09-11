@@ -1,8 +1,10 @@
 package team.trimark.javallm.nn;
 
+import team.trimark.javallm.type.DenseTokenMatrix;
 import team.trimark.javallm.type.TokenMatrix;
 
 import java.util.Random;
+import java.util.stream.IntStream;
 
 /**
  * Dense linear algebra operations over {@link TokenMatrix}. Every operation treats a matrix as
@@ -15,6 +17,74 @@ public final class Matrices {
     private Matrices() {}
 
     /**
+     * The number of output columns below which a product is computed on the calling thread.
+     * Below this width the fork/join overhead costs more than the parallelism returns.
+     */
+    private static final int PARALLEL_THRESHOLD = 8;
+
+    /**
+     * Returns the values of a matrix as a flat array in column-major order, so that the product
+     * kernels can walk memory contiguously as the {@code get}/{@code set} accessors cannot.
+     * <p>
+     * A {@link DenseTokenMatrix} already stores its values in exactly this layout, so its backing
+     * array is returned as-is and no copy is made. Only a foreign implementation has to be copied.
+     * The returned array must be treated as read-only: when it is shared, writing to it would
+     * write through to the operand.
+     * @param matrix The matrix to read
+     * @return The values, indexed by {@code column * rows + row}, possibly shared with the matrix
+     */
+    private static float[] flat(TokenMatrix matrix) {
+        if (matrix instanceof DenseTokenMatrix dense) {
+            return dense.columnMajorValues();
+        }
+
+        int rows = matrix.rows();
+        int columns = matrix.columns();
+        float[] values = new float[rows * columns];
+
+        for (int c = 0; c < columns; c++) {
+            int offset = c * rows;
+
+            for (int r = 0; r < rows; r++) {
+                values[offset + r] = matrix.get(r, c);
+            }
+        }
+
+        return values;
+    }
+
+    /**
+     * Builds a matrix of the provided shape backed by a freshly computed column-major array. The
+     * array is adopted rather than copied, so the caller must not retain it.
+     * @param rows The number of rows
+     * @param columns The number of columns
+     * @param values The values, indexed by {@code column * rows + row}
+     * @return The new matrix
+     */
+    private static TokenMatrix unflatten(int rows, int columns, float[] values) {
+        return DenseTokenMatrix.wrap(rows, columns, values);
+    }
+
+    /**
+     * Runs the provided action once for every output column, in parallel when there are
+     * enough of them to be worth it. Every column of a matrix product is independent, so
+     * no two invocations ever write to the same element and no synchronisation is needed.
+     * @param columns The number of columns to cover
+     * @param action The action to run for each column index
+     */
+    private static void forEachColumn(int columns, java.util.function.IntConsumer action) {
+        if (columns < PARALLEL_THRESHOLD) {
+            for (int j = 0; j < columns; j++) {
+                action.accept(j);
+            }
+
+            return;
+        }
+
+        IntStream.range(0, columns).parallel().forEach(action);
+    }
+
+    /**
      * Creates a matrix of the provided shape filled with samples from a normal distribution.
      * @param rows The number of rows
      * @param columns The number of columns
@@ -23,15 +93,15 @@ public final class Matrices {
      * @return The new matrix
      */
     public static TokenMatrix randomNormal(int rows, int columns, double stdDev, Random random) {
-        TokenMatrix out = new TokenMatrix(rows, columns);
+        float[] out = new float[rows * columns];
 
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < columns; c++) {
-                out.set(r, c, (float) (random.nextGaussian() * stdDev));
+                out[c * rows + r] = (float) (random.nextGaussian() * stdDev);
             }
         }
 
-        return out;
+        return DenseTokenMatrix.wrap(rows, columns, out);
     }
 
     /**
@@ -42,15 +112,9 @@ public final class Matrices {
      * @return The new matrix
      */
     public static TokenMatrix filled(int rows, int columns, float value) {
-        TokenMatrix out = new TokenMatrix(rows, columns);
-
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < columns; c++) {
-                out.set(r, c, value);
-            }
-        }
-
-        return out;
+        float[] out = new float[rows * columns];
+        java.util.Arrays.fill(out, value);
+        return DenseTokenMatrix.wrap(rows, columns, out);
     }
 
     /**
@@ -69,19 +133,30 @@ public final class Matrices {
             throw new IllegalArgumentException("Cannot multiply " + n + "*" + m + " by " + b.rows() + "*" + p);
         }
 
-        TokenMatrix out = new TokenMatrix(n, p);
+        float[] av = flat(a);
+        float[] bv = flat(b);
+        float[] ov = new float[n * p];
 
-        for (int i = 0; i < n; i++) {
+        forEachColumn(p, j -> {
+            int outOffset = j * n;
+            int rightOffset = j * m;
+
             for (int k = 0; k < m; k++) {
-                float av = a.get(i, k);
+                float scalar = bv[rightOffset + k];
 
-                for (int j = 0; j < p; j++) {
-                    out.set(i, j, out.get(i, j) + av * b.get(k, j));
+                if (scalar == 0f) {
+                    continue;
+                }
+
+                int leftOffset = k * n;
+
+                for (int i = 0; i < n; i++) {
+                    ov[outOffset + i] += av[leftOffset + i] * scalar;
                 }
             }
-        }
+        });
 
-        return out;
+        return unflatten(n, p, ov);
     }
 
     /**
@@ -100,21 +175,29 @@ public final class Matrices {
             throw new IllegalArgumentException("Cannot multiply " + n + "*" + m + " by transposed " + p + "*" + b.columns());
         }
 
-        TokenMatrix out = new TokenMatrix(n, p);
+        float[] av = flat(a);
+        float[] bv = flat(b);
+        float[] ov = new float[n * p];
 
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < p; j++) {
-                float sum = 0f;
+        forEachColumn(p, j -> {
+            int outOffset = j * n;
 
-                for (int k = 0; k < m; k++) {
-                    sum += a.get(i, k) * b.get(j, k);
+            for (int k = 0; k < m; k++) {
+                float scalar = bv[k * p + j];
+
+                if (scalar == 0f) {
+                    continue;
                 }
 
-                out.set(i, j, sum);
-            }
-        }
+                int leftOffset = k * n;
 
-        return out;
+                for (int i = 0; i < n; i++) {
+                    ov[outOffset + i] += av[leftOffset + i] * scalar;
+                }
+            }
+        });
+
+        return unflatten(n, p, ov);
     }
 
     /**
@@ -133,19 +216,50 @@ public final class Matrices {
             throw new IllegalArgumentException("Cannot multiply transposed " + n + "*" + m + " by " + b.rows() + "*" + p);
         }
 
-        TokenMatrix out = new TokenMatrix(m, p);
+        float[] av = flat(a);
+        float[] bv = flat(b);
+        float[] ov = new float[m * p];
 
-        for (int k = 0; k < n; k++) {
+        forEachColumn(p, j -> {
+            int outOffset = j * m;
+            int rightOffset = j * n;
+
+            int limit = n - (n % 4);
+
             for (int i = 0; i < m; i++) {
-                float av = a.get(k, i);
+                int leftOffset = i * n;
 
-                for (int j = 0; j < p; j++) {
-                    out.set(i, j, out.get(i, j) + av * b.get(k, j));
+                // Four accumulators rather than one. A single running sum makes every addition wait
+                // for the previous one to land, which pins this loop to the latency of floating point
+                // addition no matter how much the processor could otherwise overlap. Four independent
+                // chains fill that idle time. Floating point addition is not associative, so this does
+                // change the last bits of the result - the sum is exact to the same precision, but it
+                // is a different order of it.
+                float sum0 = 0f;
+                float sum1 = 0f;
+                float sum2 = 0f;
+                float sum3 = 0f;
+
+                int k = 0;
+
+                for (; k < limit; k += 4) {
+                    sum0 += av[leftOffset + k] * bv[rightOffset + k];
+                    sum1 += av[leftOffset + k + 1] * bv[rightOffset + k + 1];
+                    sum2 += av[leftOffset + k + 2] * bv[rightOffset + k + 2];
+                    sum3 += av[leftOffset + k + 3] * bv[rightOffset + k + 3];
                 }
-            }
-        }
 
-        return out;
+                float sum = (sum0 + sum1) + (sum2 + sum3);
+
+                for (; k < n; k++) {
+                    sum += av[leftOffset + k] * bv[rightOffset + k];
+                }
+
+                ov[outOffset + i] = sum;
+            }
+        });
+
+        return unflatten(m, p, ov);
     }
 
     /**
@@ -157,15 +271,16 @@ public final class Matrices {
      */
     public static TokenMatrix add(TokenMatrix a, TokenMatrix b) {
         requireSameShape(a, b);
-        TokenMatrix out = new TokenMatrix(a.rows(), a.columns());
 
-        for (int r = 0; r < a.rows(); r++) {
-            for (int c = 0; c < a.columns(); c++) {
-                out.set(r, c, a.get(r, c) + b.get(r, c));
-            }
+        float[] av = flat(a);
+        float[] bv = flat(b);
+        float[] ov = new float[av.length];
+
+        for (int i = 0; i < ov.length; i++) {
+            ov[i] = av[i] + bv[i];
         }
 
-        return out;
+        return unflatten(a.rows(), a.columns(), ov);
     }
 
     /**
@@ -176,6 +291,17 @@ public final class Matrices {
      */
     public static void addInPlace(TokenMatrix target, TokenMatrix source) {
         requireSameShape(target, source);
+
+        if (target instanceof DenseTokenMatrix dense) {
+            float[] tv = dense.columnMajorValues();
+            float[] sv = flat(source);
+
+            for (int i = 0; i < tv.length; i++) {
+                tv[i] += sv[i];
+            }
+
+            return;
+        }
 
         for (int r = 0; r < target.rows(); r++) {
             for (int c = 0; c < target.columns(); c++) {
@@ -196,15 +322,23 @@ public final class Matrices {
             throw new IllegalArgumentException("Expected a 1*" + a.columns() + " row vector.");
         }
 
-        TokenMatrix out = new TokenMatrix(a.rows(), a.columns());
+        int rows = a.rows();
+        int columns = a.columns();
 
-        for (int r = 0; r < a.rows(); r++) {
-            for (int c = 0; c < a.columns(); c++) {
-                out.set(r, c, a.get(r, c) + rowVector.get(0, c));
+        float[] av = flat(a);
+        float[] vv = flat(rowVector);
+        float[] ov = new float[av.length];
+
+        for (int c = 0; c < columns; c++) {
+            int offset = c * rows;
+            float add = vv[c];
+
+            for (int r = 0; r < rows; r++) {
+                ov[offset + r] = av[offset + r] + add;
             }
         }
 
-        return out;
+        return unflatten(rows, columns, ov);
     }
 
     /**
@@ -213,15 +347,24 @@ public final class Matrices {
      * @return The column-wise sums, of shape {@code 1 * m}
      */
     public static TokenMatrix sumRows(TokenMatrix a) {
-        TokenMatrix out = new TokenMatrix(1, a.columns());
+        int rows = a.rows();
+        int columns = a.columns();
 
-        for (int r = 0; r < a.rows(); r++) {
-            for (int c = 0; c < a.columns(); c++) {
-                out.set(0, c, out.get(0, c) + a.get(r, c));
+        float[] av = flat(a);
+        float[] ov = new float[columns];
+
+        for (int c = 0; c < columns; c++) {
+            int offset = c * rows;
+            float sum = 0f;
+
+            for (int r = 0; r < rows; r++) {
+                sum += av[offset + r];
             }
+
+            ov[c] = sum;
         }
 
-        return out;
+        return unflatten(1, columns, ov);
     }
 
     /**
@@ -231,15 +374,14 @@ public final class Matrices {
      * @return The scaled matrix
      */
     public static TokenMatrix scale(TokenMatrix a, float scalar) {
-        TokenMatrix out = new TokenMatrix(a.rows(), a.columns());
+        float[] av = flat(a);
+        float[] ov = new float[av.length];
 
-        for (int r = 0; r < a.rows(); r++) {
-            for (int c = 0; c < a.columns(); c++) {
-                out.set(r, c, a.get(r, c) * scalar);
-            }
+        for (int i = 0; i < ov.length; i++) {
+            ov[i] = av[i] * scalar;
         }
 
-        return out;
+        return unflatten(a.rows(), a.columns(), ov);
     }
 
     /**
@@ -251,15 +393,16 @@ public final class Matrices {
      */
     public static TokenMatrix multiply(TokenMatrix a, TokenMatrix b) {
         requireSameShape(a, b);
-        TokenMatrix out = new TokenMatrix(a.rows(), a.columns());
 
-        for (int r = 0; r < a.rows(); r++) {
-            for (int c = 0; c < a.columns(); c++) {
-                out.set(r, c, a.get(r, c) * b.get(r, c));
-            }
+        float[] av = flat(a);
+        float[] bv = flat(b);
+        float[] ov = new float[av.length];
+
+        for (int i = 0; i < ov.length; i++) {
+            ov[i] = av[i] * bv[i];
         }
 
-        return out;
+        return unflatten(a.rows(), a.columns(), ov);
     }
 
     /**
@@ -268,29 +411,33 @@ public final class Matrices {
      * @return The matrix of probabilities, where every row sums to {@code 1}
      */
     public static TokenMatrix softmaxRows(TokenMatrix a) {
-        TokenMatrix out = new TokenMatrix(a.rows(), a.columns());
+        int rows = a.rows();
+        int columns = a.columns();
 
-        for (int r = 0; r < a.rows(); r++) {
+        float[] av = flat(a);
+        float[] ov = new float[av.length];
+
+        for (int r = 0; r < rows; r++) {
             float max = Float.NEGATIVE_INFINITY;
 
-            for (int c = 0; c < a.columns(); c++) {
-                max = Math.max(max, a.get(r, c));
+            for (int c = 0; c < columns; c++) {
+                max = Math.max(max, av[c * rows + r]);
             }
 
             float sum = 0f;
 
-            for (int c = 0; c < a.columns(); c++) {
-                float e = (float) Math.exp(a.get(r, c) - max);
-                out.set(r, c, e);
+            for (int c = 0; c < columns; c++) {
+                float e = (float) Math.exp(av[c * rows + r] - max);
+                ov[c * rows + r] = e;
                 sum += e;
             }
 
-            for (int c = 0; c < a.columns(); c++) {
-                out.set(r, c, out.get(r, c) / sum);
+            for (int c = 0; c < columns; c++) {
+                ov[c * rows + r] /= sum;
             }
         }
 
-        return out;
+        return unflatten(rows, columns, ov);
     }
 
     /**

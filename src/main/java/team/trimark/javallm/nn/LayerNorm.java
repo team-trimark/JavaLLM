@@ -43,7 +43,7 @@ public final class LayerNorm {
      */
     public LayerNorm(String name, int features, List<Parameter> parameters) {
         this.gamma = new Parameter(name + ".gamma", Matrices.filled(1, features, 1f));
-        this.beta = new Parameter(name + ".beta", new TokenMatrix(1, features));
+        this.beta = new Parameter(name + ".beta", TokenMatrix.of(1, features));
 
         parameters.add(gamma);
         parameters.add(beta);
@@ -58,10 +58,10 @@ public final class LayerNorm {
         int t = x.rows();
         int d = x.columns();
 
-        normalized = new TokenMatrix(t, d);
+        normalized = TokenMatrix.of(t, d);
         inverseDeviations = new float[t];
 
-        TokenMatrix out = new TokenMatrix(t, d);
+        TokenMatrix out = TokenMatrix.of(t, d);
 
         for (int r = 0; r < t; r++) {
             float mean = 0f;
@@ -104,7 +104,7 @@ public final class LayerNorm {
         int t = dOut.rows();
         int d = dOut.columns();
 
-        TokenMatrix dx = new TokenMatrix(t, d);
+        TokenMatrix dx = TokenMatrix.of(t, d);
 
         for (int r = 0; r < t; r++) {
             float meanDHat = 0f;

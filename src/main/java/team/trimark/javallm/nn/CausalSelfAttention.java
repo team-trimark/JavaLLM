@@ -90,6 +90,61 @@ public final class CausalSelfAttention {
     }
 
     /**
+     * Runs attention for a single new position, reading the keys and values of every
+     * earlier position from the provided cache and appending its own.
+     * <p>
+     * This is the inference counterpart of {@link #forward(TokenMatrix)} and computes the
+     * same result for the final row, but in {@code O(t)} rather than {@code O(t^2)}. It
+     * records nothing for a backward pass, so it must not be used while training.
+     * @param x The activations of the new position, of shape {@code 1 * features}
+     * @param cache The keys and values of the positions before it
+     * @return The attention output, of shape {@code 1 * features}
+     * @throws IllegalStateException When the cache is full
+     */
+    public TokenMatrix forwardStep(TokenMatrix x, AttentionCache cache) {
+        TokenMatrix query = Matrices.matmul(x, queryWeights.value);
+        TokenMatrix key = Matrices.matmul(x, keyWeights.value);
+        TokenMatrix value = Matrices.matmul(x, valueWeights.value);
+
+        cache.append(key, value);
+
+        int t = cache.length();
+        int d = x.columns();
+        float[] weights = new float[t];
+        float max = Float.NEGATIVE_INFINITY;
+
+        for (int j = 0; j < t; j++) {
+            float dot = 0f;
+
+            for (int c = 0; c < d; c++) {
+                dot += query.get(0, c) * cache.key(j, c);
+            }
+
+            weights[j] = dot * scale;
+            max = Math.max(max, weights[j]);
+        }
+
+        float sum = 0f;
+
+        for (int j = 0; j < t; j++) {
+            weights[j] = (float) Math.exp(weights[j] - max);
+            sum += weights[j];
+        }
+
+        TokenMatrix mixedRow = TokenMatrix.of(1, d);
+
+        for (int j = 0; j < t; j++) {
+            float weight = weights[j] / sum;
+
+            for (int c = 0; c < d; c++) {
+                mixedRow.set(0, c, mixedRow.get(0, c) + weight * cache.value(j, c));
+            }
+        }
+
+        return Matrices.matmul(mixedRow, outputWeights.value);
+    }
+
+    /**
      * Runs attention over the provided activations.
      * @param x The activations, of shape {@code sequence * features}
      * @return The attention output, of the same shape
@@ -131,7 +186,7 @@ public final class CausalSelfAttention {
         TokenMatrix dAttention = Matrices.matmulNT(dMixed, values);
         TokenMatrix dValues = Matrices.matmulTN(attention, dMixed);
 
-        TokenMatrix dScores = new TokenMatrix(t, t);
+        TokenMatrix dScores = TokenMatrix.of(t, t);
 
         for (int i = 0; i < t; i++) {
             float rowDot = 0f;
