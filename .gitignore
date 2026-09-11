@@ -39,3 +39,8 @@ build/
 
 ### LOCAL ###
 .local/
+### JavaLLM ###
+checkpoints/
+*.ckpt
+training*.log
+server.log
